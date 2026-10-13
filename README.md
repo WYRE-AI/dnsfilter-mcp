@@ -26,16 +26,39 @@ DNSFilter authenticates with a static **API key**, generated in the DNSFilter da
 - **Structurally verified (checked directly, stated with full confidence):** this connector's own code makes zero mutating calls - every function in `client.ts` is a `GET`, and no `POST`/`PUT`/`PATCH`/`DELETE` call exists anywhere in `src/` (enforced by `tool-scope.test.ts`'s forbidden-token check). Also structurally verified, directly against DNSFilter's own published OpenAPI spec (`api.dnsfilter.com/docs.json`, fetched directly): an API key is generated **per user account** (the `ApiKey` resource schema carries a `user_id` field) and its own creation request (`ApiKeyCreateSpec`) accepts only `name` and `expiry` - **there is no scope/role/permission field chosen at key-creation time**. A key's effective capability is therefore inherited from whatever role the DNSFilter user account it was generated under holds, not selected independently when the key itself is created. That same spec's `Membership`/`OrganizationUser` role enums explicitly include a `"read_only"` value alongside `"administrator"` (and, on the MSP/distributor membership shape, alongside `"network_administrator"`/`"network_support"`/`"support"`) - so a genuinely restricted DNSFilter user role is a first-class, documented concept in the API itself, not just dashboard-UI copy.
 - **Vendor-documented, not independently verified (hedged deliberately):** DNSFilter's own help center separately describes a dashboard-level **Read Only** user role ("Users with more restrictive roles like Read Only... have hidden dashboard tabs and panels"). Combined with the structural finding above, generating an API key under a dedicated Read-Only-role user account *should* yield a key whose calls DNSFilter's API server rejects for any write endpoint - but whether the API actually **enforces** that role server-side against write calls (versus the restriction being dashboard-UI-only) has not been tested by WYRE. Nobody sent a live write call against a Read-Only-role key to confirm, correctly: that would be a mutating test against a real account, not something to run without consent. **Do not read this README as having established that a Read-Only-role API key cannot perform writes against DNSFilter's API** - only that (a) DNSFilter's spec models a `read_only` role as a real, first-class concept, and (b) this connector's own code never attempts a write regardless of which key it's given.
 
-In gateway mode the key arrives per-request via the `X-DNSFilter-Api-Key` header; in local/stdio mode it's read once from `DNSFILTER_API_KEY`.
+In gateway mode the key arrives per-request via the `X-DNSFilter-Api-Key` header; in local/stdio mode it's read once from `DNSFILTER_API_KEY`. The stdio transport does not use `CONDUIT_S2S_SECRET`.
+
+### HTTP authentication
+
+`MCP_TRANSPORT=http` refuses to start when `CONDUIT_S2S_SECRET` is empty or a known placeholder (`changeme`, `change-me`, `placeholder`, `secret`, `example`, `replace-me`, `replace-with-a-real-secret`, `your-s2s-secret`, `your-secret`, `s2s-secret`). The process logs an error and exits non-zero. It never prints the secret. A placeholder is refused even if `MCP_ALLOW_INSECURE_DEV=1` is set.
+
+`MCP_ALLOW_INSECURE_DEV=1` is local development only. It starts HTTP without a secret, logs a warning, does not check `X-Gateway-S2S`, and listens on `127.0.0.1` only. A non-loopback `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored in that mode and the override is logged.
+
+When a real secret is set, `MCP_HTTP_HOST` is honored. Unset, the bind address is `127.0.0.1`. The container image sets `MCP_HTTP_HOST=0.0.0.0` and `AUTH_MODE=gateway`.
+
+Every `/mcp` request must then include `X-Gateway-S2S`:
+
+```
+t=<unix seconds>,v1=<hex hmac-sha256>
+```
+
+`v1` is HMAC-SHA256 of the ASCII string `t=<unix seconds>`, keyed with `CONDUIT_S2S_SECRET`, hex-encoded. The timestamp must be within 300 seconds of the server clock. A missing or invalid header returns 401.
+
+In `AUTH_MODE=gateway`, `/mcp` also requires `X-DNSFilter-Api-Key`. A request missing that header returns 401 and does not fall back to `DNSFILTER_API_KEY`. `/health` stays unauthenticated and does not read credentials.
 
 ## Configuration
 
+Copy [`.env.example`](.env.example) and set the variables below.
+
 | Env var | Description |
 |---|---|
-| `DNSFILTER_API_KEY` | DNSFilter API key, generated in the DNSFilter dashboard. |
+| `DNSFILTER_API_KEY` | DNSFilter API key, generated in the DNSFilter dashboard. Required for stdio and for `AUTH_MODE=env`. Not set on the gateway Compose service. |
 | `MCP_TRANSPORT` | `stdio` (default) or `http`. |
-| `AUTH_MODE` | `env` (default, reads the var above) or `gateway` (credential arrives per-request via the `X-DNSFilter-Api-Key` header, injected by the Conduit gateway). |
-| `CONDUIT_S2S_SECRET` | When set, the HTTP transport requires a valid `X-Gateway-S2S` header (Conduit sidecar auth) on every `/mcp` request. |
+| `AUTH_MODE` | `env` (default, reads the var above) or `gateway` (credential arrives per-request via the `X-DNSFilter-Api-Key` header, injected by the Conduit gateway). The image and Compose default to `gateway`. Gateway mode never falls back to `DNSFILTER_API_KEY`. |
+| `CONDUIT_S2S_SECRET` | Required for HTTP. Service-to-service secret used to verify `X-Gateway-S2S`. The process exits when this is empty or a known placeholder. Compose will not start without it. Never commit a real value. |
+| `MCP_ALLOW_INSECURE_DEV` | Set to exactly `1` only for local HTTP without `CONDUIT_S2S_SECRET`. Logs a warning, skips `X-Gateway-S2S`, and binds `127.0.0.1` only. |
+| `MCP_HTTP_HOST` | Bind address when a real `CONDUIT_S2S_SECRET` is set. Defaults to `127.0.0.1`. The container image sets `0.0.0.0`. Ignored (forced to `127.0.0.1`) when there is no secret. |
+| `MCP_HTTP_PORT` | HTTP port. Defaults to `8080`. |
 | `LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error`. |
 
 ## Tools
@@ -103,9 +126,37 @@ npm run lint   # tsc --noEmit
 
 ## Docker
 
+The image listens on `0.0.0.0` inside the container (`MCP_HTTP_HOST`) and defaults to `AUTH_MODE=gateway`. Publish the port on loopback and pass the S2S secret. In gateway mode the DNSFilter API key arrives on each request as `X-DNSFilter-Api-Key`; it is not read from the environment. Sign `X-Gateway-S2S` as `t=<unix seconds>,v1=<hex hmac-sha256 of that t= string>` with `CONDUIT_S2S_SECRET`.
+
 ```bash
 docker build -t dnsfilter-mcp .
-docker run -p 8080:8080 -e DNSFILTER_API_KEY=... dnsfilter-mcp
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -p 127.0.0.1:8080:8080 \
+  dnsfilter-mcp
+```
+
+Compose refuses to start when `CONDUIT_S2S_SECRET` is unset, sets `AUTH_MODE=gateway`, does not inject `DNSFILTER_API_KEY`, and publishes `127.0.0.1:8080:8080`:
+
+```bash
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" docker compose up
+```
+
+Single-tenant HTTP (`AUTH_MODE=env`) still requires the S2S secret, then uses `DNSFILTER_API_KEY`:
+
+```bash
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -e AUTH_MODE=env \
+  -e DNSFILTER_API_KEY=your-api-key \
+  -p 127.0.0.1:8080:8080 \
+  dnsfilter-mcp
+```
+
+Local HTTP without a secret is development-only. It binds `127.0.0.1` even if `MCP_HTTP_HOST` is `0.0.0.0`, and logs a warning:
+
+```bash
+MCP_TRANSPORT=http MCP_ALLOW_INSECURE_DEV=1 npm run start:http
 ```
 
 ## License
