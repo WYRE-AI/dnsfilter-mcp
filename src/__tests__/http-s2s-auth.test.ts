@@ -359,7 +359,7 @@ describe('gateway /mcp auth', () => {
   });
 
   it('accepts a valid S2S header plus the credential header and uses that key', async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response(JSON.stringify({ data: [{ id: 'org-1' }] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -376,9 +376,7 @@ describe('gateway /mcp auth', () => {
     const body = JSON.parse(response.body) as { result: { content: Array<{ text: string }> } };
     expect(JSON.parse(body.result.content[0].text).data[0].id).toBe('org-1');
     const dnsCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('api.dnsfilter.com'));
-    expect(dnsCall).toBeDefined();
-    const init = dnsCall?.[1] as RequestInit;
-    expect((init.headers as Record<string, string>).Authorization).toBe(HEADER_API_KEY);
+    expect(dnsCall?.[1]?.headers).toMatchObject({ Authorization: HEADER_API_KEY });
     expect(response.body).not.toContain(ENV_API_KEY);
     expect(response.body).not.toContain(S2S_SECRET);
   });
@@ -408,7 +406,7 @@ describe('gateway /mcp auth', () => {
     process.env.DNSFILTER_API_KEY = ENV_API_KEY;
     process.env.LOG_LEVEL = 'error';
     silenceLogs();
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response(JSON.stringify({ data: [] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -422,8 +420,6 @@ describe('gateway /mcp auth', () => {
     const response = await postMcp(port, { 'x-gateway-s2s': mintS2sHeader(S2S_SECRET) });
     expect(response.status).toBe(200);
     const dnsCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('api.dnsfilter.com'));
-    expect(dnsCall).toBeDefined();
-    const init = dnsCall?.[1] as RequestInit;
-    expect((init.headers as Record<string, string>).Authorization).toBe(ENV_API_KEY);
+    expect(dnsCall?.[1]?.headers).toMatchObject({ Authorization: ENV_API_KEY });
   });
 });
