@@ -186,8 +186,11 @@ export async function startHttpServer(): Promise<Server> {
     await handle();
   });
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once('error', reject);
     httpServer.listen(port, host, () => {
+      httpServer.off('error', reject);
+      httpServer.on('error', (err) => logger.error('HTTP server error', { error: err.message }));
       logger.info(`HTTP streaming server listening on ${host}:${port}`);
       resolve();
     });
