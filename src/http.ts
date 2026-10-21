@@ -148,7 +148,18 @@ export async function startHttpServer(): Promise<Server> {
       return;
     }
 
-    // Body cap runs only after S2S passes so unauthenticated callers still get 401.
+    // Gateway mode: the API key must arrive on every request. Falling
+    // through would resolve DNSFILTER_API_KEY from the process environment,
+    // which is not request-scoped.
+    const apiKey = isGatewayMode ? headerValue(req.headers['x-dnsfilter-api-key']) : undefined;
+    if (isGatewayMode && !apiKey) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(GATEWAY_CREDENTIALS_UNAUTHORIZED));
+      return;
+    }
+
+    // Body cap runs only after S2S and (gateway mode) credential checks pass,
+    // so unauthenticated callers always get 401 before 413.
     const contentLength = Number(headerValue(req.headers['content-length']));
     if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
       res.writeHead(413, { 'Content-Type': 'application/json' });
@@ -185,16 +196,7 @@ export async function startHttpServer(): Promise<Server> {
       await transport.handleRequest(req, res);
     };
 
-    if (isGatewayMode) {
-      // Gateway mode: the API key must arrive on every request. Falling
-      // through would resolve DNSFILTER_API_KEY from the process environment,
-      // which is not request-scoped.
-      const apiKey = headerValue(req.headers['x-dnsfilter-api-key']);
-      if (!apiKey) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(GATEWAY_CREDENTIALS_UNAUTHORIZED));
-        return;
-      }
+    if (apiKey) {
       await runWithCredentials({ apiKey }, handle);
       return;
     }
