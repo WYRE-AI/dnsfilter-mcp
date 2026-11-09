@@ -76,6 +76,7 @@ function buildQuery(params: Record<string, unknown> = {}): URLSearchParams {
   return qs;
 }
 
+/** Collapse whitespace, redact API keys/tokens, and truncate for safe log/error previews. */
 function redactErrorBody(body: string, apiKey: string): string {
   return (apiKey ? body.split(apiKey).join('[redacted]') : body)
     .replace(/Bearer\s+[A-Za-z0-9._~+\/=-]+/gi, '[redacted]')
@@ -113,7 +114,7 @@ async function doGet<T>(
     }
     if (!res.ok) {
       const body = redactErrorBody(await res.text().catch(() => ''), creds.apiKey);
-      logger.error('DNSFilter upstream error', { status: res.status, path, url, body });
+      logger.error('DNSFilter upstream error', { status: res.status, path, body });
       throw new DNSFilterApiError(
         `DNSFilter ${path} failed: HTTP ${res.status}${body ? `: ${body}` : ''}`,
         res.status

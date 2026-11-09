@@ -118,7 +118,7 @@ DNSFilter's entire reporting surface is `GET`-only, so all 38 documented report 
 - `dnsfilter_get_total_requests`, `dnsfilter_get_total_requests_agents`, `dnsfilter_get_total_requests_collections`, `dnsfilter_get_total_requests_geo`, `dnsfilter_get_total_requests_organizations`, `dnsfilter_get_total_requests_users` - total request-count totals, broken out by dimension.
 - `dnsfilter_get_total_threats`, `dnsfilter_get_total_threats_organizations`, `dnsfilter_get_total_threats_users` - blocked-threat totals.
 
-The `qps_active_agents` and `qps_active_organizations` schemas match DNSFilter OpenAPI: neither path accepts MAC address, NAT IP, or private IP filters. Empty or whitespace-only query values are omitted to preserve upstream defaults. Upstream 4xx/5xx response bodies (except the separately handled 401/429 responses) are redacted and truncated before being logged and surfaced to callers. Query logs allow up to 25 seconds, within the gateway's 30-second limit; other requests retain the 15-second timeout.
+The `qps_active_agents` and `qps_active_organizations` filter **names** match DNSFilter OpenAPI (neither path accepts MAC address, NAT IP, or private IP filters); shared enum/string schemas may still accept values those paths reject (for example `source: "networks"`). Empty or whitespace-only query values are omitted to preserve upstream defaults. Upstream 4xx/5xx response bodies (except the separately handled 401/429 responses) are redacted and truncated before being logged and surfaced to callers. Query logs allow up to 25 seconds, within the gateway's 30-second limit; other requests retain the 15-second timeout.
 
 ## Sensitivity
 
