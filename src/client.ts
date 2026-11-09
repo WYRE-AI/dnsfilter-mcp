@@ -55,7 +55,7 @@ function appendPage(qs: URLSearchParams, page: PageParam | undefined): void {
 function buildQuery(params: Record<string, unknown> = {}): URLSearchParams {
   const qs = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null) continue;
+    if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) continue;
     if (key === 'page') {
       appendPage(qs, value as PageParam);
       continue;
@@ -76,35 +76,57 @@ function buildQuery(params: Record<string, unknown> = {}): URLSearchParams {
   return qs;
 }
 
+/** Collapse whitespace, redact API keys/tokens, and truncate for safe log/error previews. */
+function redactErrorBody(body: string, apiKey: string): string {
+  return (apiKey ? body.split(apiKey).join('[redacted]') : body)
+    .replace(/Bearer\s+[A-Za-z0-9._~+\/=-]+/gi, '[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[redacted]')
+    .replace(/[A-Za-z0-9_+\/-]{40,}={0,2}/g, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
 async function doGet<T>(
   creds: DNSFilterCredentials,
   path: string,
-  query?: Record<string, unknown>
+  query?: Record<string, unknown>,
+  opts?: { timeoutMs?: number }
 ): Promise<T> {
+  const timeoutMs = opts?.timeoutMs ?? 15_000;
   const qs = query ? buildQuery(query).toString() : '';
   const url = `${BASE_URL}${path}${qs ? `?${qs}` : ''}`;
-  const res = await fetch(url, {
-    method: 'GET',
-    // No "Bearer" prefix - DNSFilter's own docs are explicit that the raw
-    // key IS the header value ("Authorization: eyJ..."). See types.ts.
-    headers: { Authorization: creds.apiKey, Accept: 'application/json' },
-    signal: AbortSignal.timeout(15_000),
-  });
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      // No "Bearer" prefix - DNSFilter's own docs are explicit that the raw
+      // key IS the header value ("Authorization: eyJ..."). See types.ts.
+      headers: { Authorization: creds.apiKey, Accept: 'application/json' },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
 
-  // 401 (invalid/revoked API key) and 429 (rate-limited) are distinct
-  // failure modes with distinct remediations - grouping them under one
-  // generic auth-error class hides a transient rate limit behind a message
-  // that reads like a bad/expired key.
-  if (res.status === 401) {
-    throw new DNSFilterAuthError(`DNSFilter rejected the API key (HTTP 401): ${path}`);
+    // Preserve distinct auth and rate-limit failure modes for callers.
+    if (res.status === 401) {
+      throw new DNSFilterAuthError(`DNSFilter rejected the API key (HTTP 401): ${path}`);
+    }
+    if (res.status === 429) {
+      throw new DNSFilterRateLimitError(`DNSFilter rate-limited the request (HTTP 429): ${path}`);
+    }
+    if (!res.ok) {
+      const body = redactErrorBody(await res.text().catch(() => ''), creds.apiKey);
+      logger.error('DNSFilter upstream error', { status: res.status, path, body });
+      throw new DNSFilterApiError(
+        `DNSFilter ${path} failed: HTTP ${res.status}${body ? `: ${body}` : ''}`,
+        res.status
+      );
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+      throw new DNSFilterApiError(`DNSFilter ${path} timed out after ${timeoutMs}ms`);
+    }
+    throw err;
   }
-  if (res.status === 429) {
-    throw new DNSFilterRateLimitError(`DNSFilter rate-limited the request (HTTP 429): ${path}`);
-  }
-  if (!res.ok) {
-    throw new DNSFilterApiError(`DNSFilter ${path} failed: HTTP ${res.status}`, res.status);
-  }
-  return (await res.json()) as T;
 }
 
 // ---------------------------------------------------------------------
@@ -286,9 +308,10 @@ export async function getOrganizationUsageDetailed(
 // ---------------------------------------------------------------------
 
 function trafficReport(
-  path: string
+  path: string,
+  opts?: { timeoutMs?: number }
 ): (creds: DNSFilterCredentials, params?: TrafficReportParams) => Promise<DNSFilterResponse> {
-  return (creds, params = {}) => doGet(creds, `/v1/traffic_reports/${path}`, { ...params });
+  return (creds, params = {}) => doGet(creds, `/v1/traffic_reports/${path}`, { ...params }, opts);
 }
 
 /** GET /v1/traffic_reports/qps - queries-per-second time series. */
@@ -298,7 +321,7 @@ export const getQpsActiveAgents = trafficReport('qps_active_agents');
 /** GET /v1/traffic_reports/qps_active_organizations - queries-per-second broken out by active organization. */
 export const getQpsActiveOrganizations = trafficReport('qps_active_organizations');
 /** GET /v1/traffic_reports/query_logs - raw DNS query log entries (domain, requester, category, allow/block result). */
-export const getQueryLogs = trafficReport('query_logs');
+export const getQueryLogs = trafficReport('query_logs', { timeoutMs: 25_000 });
 /** GET /v1/traffic_reports/top_agents - clients/agents generating the most traffic. */
 export const getTopAgents = trafficReport('top_agents');
 /** GET /v1/traffic_reports/top_application_categories - application categories generating the most traffic. */

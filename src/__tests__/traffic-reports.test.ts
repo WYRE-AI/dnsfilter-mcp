@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { handleTrafficReportTool } from '../tools/traffic-reports.js';
+import { logger } from '../utils/logger.js';
+import { DNSFilterApiError } from '../types.js';
+import { getTotalClientStats } from '../client.js';
+import { handleTrafficReportTool, TRAFFIC_REPORT_TOOLS } from '../tools/traffic-reports.js';
 import { runWithCredentials } from '../client.js';
 import { jsonResponse, textOf } from './test-helpers.js';
 
@@ -20,6 +23,7 @@ describe('handleTrafficReportTool', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -72,6 +76,82 @@ describe('handleTrafficReportTool', () => {
     expect(new URL(url).pathname).toBe(`/v1/traffic_reports/${suffix}`);
     expect(new URL(url).searchParams.get(param)).toBe(value);
     expect((init.headers as Record<string, string>).Authorization).toBe('key-1');
+  });
+
+  it.each(['dnsfilter_get_qps_active_agents', 'dnsfilter_get_qps_active_organizations'])(
+    '%s excludes undocumented filters from its schema and request', async (tool) => {
+      const extras = ['mac_addresses', 'nat_ips', 'private_ip', 'private_ip_from', 'private_ip_to'];
+      fetchMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+      await runWithCredentials(creds, () => handleTrafficReportTool(
+        tool, Object.fromEntries(extras.map(key => [key, 'unsupported']))
+      ));
+      const url = new URL(fetchMock.mock.calls[0][0]);
+      const schema = TRAFFIC_REPORT_TOOLS.find(entry => entry.name === tool)!.inputSchema;
+      for (const key of extras) {
+        expect(url.searchParams.has(key)).toBe(false);
+        expect(schema.properties).not.toHaveProperty(key);
+      }
+    }
+  );
+
+  it('omits empty and whitespace-only documented query values', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    await runWithCredentials(creds, () => handleTrafficReportTool(
+      'dnsfilter_get_qps_active_agents', { organization_ids: '', from: ' \t\n' }
+    ));
+    expect(new URL(fetchMock.mock.calls[0][0]).search).toBe('');
+  });
+
+  it.each(['plain text', 'json'])('surfaces a redacted 400 %s body and logs it', async (format) => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const token = 'a'.repeat(60);
+    const detail = `Invalid date\n ${creds.apiKey} Bearer short-token eyJhbGci.eyJzdWI.signature ${token}`;
+    fetchMock.mockResolvedValueOnce(new Response(
+      format === 'json' ? JSON.stringify({ detail }) : detail, { status: 400 }
+    ));
+    const result = await runWithCredentials(creds, () => handleTrafficReportTool(
+      'dnsfilter_get_total_client_stats', {}
+    ));
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('HTTP 400');
+    expect(textOf(result)).toContain('Invalid date');
+    expect(textOf(result)).not.toContain(creds.apiKey);
+    expect(textOf(result)).not.toContain(token);
+    expect(textOf(result)).not.toContain('short-token');
+    expect(textOf(result)).not.toContain('eyJhbGci');
+    expect(logSpy).toHaveBeenCalledWith('DNSFilter upstream error', expect.objectContaining({
+      status: 400, path: '/v1/traffic_reports/total_client_stats',
+      body: expect.stringContaining('[redacted]'),
+    }));
+    expect(JSON.stringify(logSpy.mock.calls)).not.toContain(creds.apiKey);
+  });
+
+  it('bounds error previews and tolerates unreadable error bodies', async () => {
+    const logSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(new Response('invalid '.repeat(100), { status: 500 }));
+    await expect(getTotalClientStats(creds)).rejects.toMatchObject({ status: 500 });
+    expect((logSpy.mock.calls[0][1] as { body: string }).body).toHaveLength(500);
+    fetchMock.mockResolvedValueOnce({ status: 400, ok: false, text: vi.fn().mockRejectedValue(new Error('read failed')) });
+    await expect(getTotalClientStats(creds)).rejects.toThrow('failed: HTTP 400');
+  });
+
+  it.each([
+    ['dnsfilter_get_query_logs', 25_000],
+    ['dnsfilter_get_total_client_stats', 15_000],
+  ] as const)('%s uses a %i ms timeout', async (tool, timeoutMs) => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    fetchMock.mockResolvedValueOnce(jsonResponse({ data: [] }));
+    await runWithCredentials(creds, () => handleTrafficReportTool(tool, {}));
+    expect(timeoutSpy).toHaveBeenCalledTimes(1);
+    expect(timeoutSpy).toHaveBeenCalledWith(timeoutMs);
+  });
+
+  it.each(['AbortError', 'TimeoutError'])('turns %s into a clear API error', async (name) => {
+    fetchMock.mockRejectedValueOnce(new DOMException('aborted', name));
+    const error = await getTotalClientStats(creds).catch(err => err);
+    expect(error).toBeInstanceOf(DNSFilterApiError);
+    expect(error.message).toBe('DNSFilter /v1/traffic_reports/total_client_stats timed out after 15000ms');
+    expect(error.status).toBeUndefined();
   });
 
   it('dnsfilter_get_query_logs returns the raw query-log entries', async () => {

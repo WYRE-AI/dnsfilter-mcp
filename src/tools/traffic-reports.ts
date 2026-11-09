@@ -30,7 +30,7 @@ export const TRAFFIC_REPORT_TOOLS: Tool[] = [
     description: "Queries-per-second broken out by active client/agent.",
     inputSchema: {
       type: 'object',
-      properties: pickReportProperties('from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'nat_ips', 'collection_ids', 'application_ids', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report'),
+      properties: pickReportProperties('from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'collection_ids', 'application_ids', 'type', 'source', 'security_report'),
     },
   },
   {
@@ -38,7 +38,7 @@ export const TRAFFIC_REPORT_TOOLS: Tool[] = [
     description: "Queries-per-second broken out by active organization.",
     inputSchema: {
       type: 'object',
-      properties: pickReportProperties('from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'nat_ips', 'collection_ids', 'application_ids', 'msp_id', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report'),
+      properties: pickReportProperties('from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'collection_ids', 'application_ids', 'msp_id', 'type', 'source', 'security_report'),
     },
   },
   {
@@ -383,8 +383,8 @@ const CLIENT_FN: Record<
  */
 const TOOL_PARAM_KEYS: Record<string, readonly string[]> = {
   dnsfilter_get_qps: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'nat_ips', 'collection_ids', 'application_ids', 'msp_id', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report', 'bucket_size', 'show_individual_networks'],
-  dnsfilter_get_qps_active_agents: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'nat_ips', 'collection_ids', 'application_ids', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report'],
-  dnsfilter_get_qps_active_organizations: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'nat_ips', 'collection_ids', 'application_ids', 'msp_id', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report'],
+  dnsfilter_get_qps_active_agents: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'collection_ids', 'application_ids', 'type', 'source', 'security_report'],
+  dnsfilter_get_qps_active_organizations: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'collection_ids', 'application_ids', 'msp_id', 'type', 'source', 'security_report'],
   dnsfilter_get_query_logs: ['from', 'to', 'organization_id', 'network_ids', 'network_id', 'agent_ids', 'agent_id', 'user_ids', 'user_id', 'mac_addresses', 'nat_ips', 'collection_ids', 'collection_id', 'application_ids', 'application_category_ids', 'category_ids', 'exclude_category_ids', 'policy_ids', 'domain', 'fqdn', 'question_type', 'result', 'private_ip', 'private_ip_from', 'private_ip_to', 'source', 'security_report', 'page'],
   dnsfilter_get_top_agents: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'nat_ips', 'collection_ids', 'application_ids', 'msp_id', 'name', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report', 'page'],
   dnsfilter_get_top_application_categories: ['from', 'to', 'organization_ids', 'network_ids', 'agent_ids', 'agent_types', 'user_ids', 'mac_addresses', 'collection_ids', 'application_ids', 'msp_id', 'name', 'private_ip', 'private_ip_from', 'private_ip_to', 'type', 'source', 'security_report', 'page'],
@@ -434,7 +434,10 @@ export async function handleTrafficReportTool(name: string, args: Record<string,
   try {
     const params: Record<string, unknown> = {};
     for (const key of allowedKeys) {
-      if (args[key] !== undefined) params[key] = args[key];
+      const value = args[key];
+      if (value === undefined) continue;
+      if (typeof value === 'string' && !value.trim()) continue;
+      params[key] = value;
     }
     return textResult(await fn(creds!, params));
   } catch (err) {
